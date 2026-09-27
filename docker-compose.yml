@@ -1,0 +1,69 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: whatsapp_postgres
+    environment:
+      POSTGRES_DB: whatsapp_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d whatsapp_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  postgrest:
+    image: postgrest/postgrest:latest
+    container_name: whatsapp_postgrest
+    environment:
+      PGRST_DB_URI: postgres://postgres:postgrespassword@postgres:5432/whatsapp_db
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: web_anon
+      PGRST_SERVER_PORT: 3000
+      PGRST_LOG_LEVEL: info
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: whatsapp_redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  chat_server:
+    build: .
+    environment:
+      POSTGREST_URL: http://postgrest:3000
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    deploy:
+      replicas: 2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgrest:
+        condition: service_started
+
+  l4_load_balancer:
+    image: haproxy:2.8-alpine
+    container_name: whatsapp_l4_lb
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - chat_server

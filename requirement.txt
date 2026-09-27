@@ -1,0 +1,99 @@
+I am designing a chat based application in which we will need client with the following operations supported:
+1. Create chat
+2. Send message
+3. Add User to chat
+4. Remove user from chat
+5. Check last seen of user
+
+
+So for this I have decided to use a websocket based approach with client connected to the server with a websocket.
+In this we will support some of the operations like
+
+createChat
+addParticipant
+removeParticipant
+getLastSeen
+sendMessage
+receiveMessage
+
+For all of these operations we need to setup system with acknowledgements so that sever or the client gets informed about the operations they are doing. 
+For example if a client sends a message in a Chat it will get a ACK of success or failure from the server based on the result.
+
+In this we will need these core entities:
+1. Users
+2. Client(a particular user can have multiple client)
+3. Chats (a group of Users where they can send messages to other users)
+4. Messages(messages that are been sent in the chat)
+
+Now the functional requirements:
+1. sendMessage
+2. sendMedia
+3. createChat (upto 100 users)
+
+Non Functional requirements:
+1. Messages are not stored unecessarily
+2. Message latency should be less (<0.5s)
+3. Guaranteed delivery of messages.
+4. High throughput
+
+User APIs:
+1. send_message(chat_id, content: Conent, message_type: TEXT|MEDIA)
+2. create_chat(user_id, participant_ids, chat_name)
+
+Setup:
+1. We need a chat server to orchestrate between the clients. Whenever a client sends a message it will go to the Chat Server and then chatserver based on the architecture discussed below forwards the message.
+2. Whenever the client comes online it need to setup a websocket connection with the Chat Server.
+
+Database:
+1. Messages: It will contain all the messages for the Chats.
+    message_id: uuid
+    content: json
+    sender
+    chat_id
+    timestamp
+2. Inbox: It will contain the undelivered message to the users.
+    message_id
+    client_id
+
+3. Users:
+    user_id
+    details
+
+4. Clients
+    client_id
+    user_id
+
+High Level Design:
+    1. Chat creation:
+        a. User connect to the chatserver and send a message on that connection to createChat with chat_name, participant_ids, user_id.
+        b. Then Chat server will create a Chat entry in the table along with entries in ChatParticipants for all the participants.
+        c. The service returns Success
+    2. Send Message:
+        For this first we need to understand how the Chat Server will work.
+        Pre Reqs:
+            a. Redis: For each Chat we will create a channel and the ChatServers will subscribe to that channel
+            b. L4 Load Balancer
+        Flow of message:
+            a. Whenever a user sends a message if will be passed to the connected chatserver to whom the user is connected through the websocket.
+            b. That chatserver will update the database to add the message to Message table and Inbox table for each user of the Chat.
+            c. Then the chat server will look for all the users in that chat, figure out the current chat server to which they are connected, and add the message to the channel for that chat server.(It will use batching for the number of users if they are connected to the same server.) 
+            d. Then corresponding ChatServer will handle that message as follows (one JetServer will subscribe to only one Redis channel.)
+                (i). For the client which are connected to that chatserver they will send the message and wait for the ACK.
+                (ii). If ACK received: Remove the Inbox entry for that client.
+                (iii). If not received then it silently continues(dont delete entry from the Inbox) and when the ping-pong connection check is done, then, with the help of the sequence number, we can identify that if the server has a sequence number different from the client's, the server will flush back the remaining messages, and then the client will send the acknowledgement. 
+    
+    3. How does chatserver maintains the connection?
+        - The chatserver periodically sends Ping message to the client and if the client replies with PONG then connection is there else the server closes the connection and let the client to retry for connection.
+    
+    4. How does the chatserver handles the redis failures?
+        - Piggybank Sequence Number on heartbeats: 
+            -> Global User Sequence Number: Single incrementing counter per user. Each message will increase this counter by one. It will be incremented by the senders chatserver.
+            -> Include Sequence in heartbeats: With the Ping-Pong heartbeats we will also send the Sequence number.
+            -> Clients Detect Gap: If the clients local Sequence number is behind the global Sequence number it immediately requests a sync.
+    5. How can we handle a "last seen" functionality
+        - Based on the heartbeats we can maintain for each user the last time it has received a successful pong message(update only when we fails to get that message) and updates back when client reconnects.
+        - It will be a user based feature not client based.
+    6. How will we handle media type messages:
+        - We will use a preassigned Url for this and whenever a user tries to send a media type message it will first ask for preassigned s3 url.
+        - That media gets uploaded into that S3 bucket.
+        - And that url will be send to the websocket instead of full raw binary.

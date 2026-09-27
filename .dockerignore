@@ -1,0 +1,16 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+.git
+.gitignore
+.DS_Store
+*.md
+requirement.txt
+test_*.py
+docker-compose.yml
+haproxy.cfg
+init.sql
+Dockerfile
+.dockerignore
